@@ -527,10 +527,16 @@ function mostrarListaProductos() {
       const texto = input.value.toLowerCase();
       const cat   = select.value;
 
-      const filtrados = productos.filter(p =>
+      const filtrados = productos
+      .filter(p =>
         (!cat || p.categoria === cat) &&
-        (p.nombre.toLowerCase().includes(texto) ||
-         p.codigo.toLowerCase().includes(texto))
+        (
+          p.nombre.toLowerCase().includes(texto) ||
+          p.codigo.toLowerCase().includes(texto)
+        )
+      )
+      .sort((a, b) =>
+        a.nombre.localeCompare(b.nombre, 'es', { sensitivity: 'base' })
       );
 
       if (filtrados.length === 0) {
@@ -545,9 +551,16 @@ function mostrarListaProductos() {
 
         return `
           <div class="producto-item" onclick="mostrarFormularioAjuste(${p.id})">
-            <div>
+            
+            <img
+              id="img-prod-${p.id}"
+              class="producto-foto"
+              style="width:48px;height:48px;object-fit:cover;border-radius:10px;margin-right:0.6rem;"
+            >
+
+            <div style="flex:1;">
               <strong>${p.nombre}</strong><br>
-              <small>${p.categoria} | ${p.codigo}</small>
+              <small>${p.categoria}${p.codigoVisual ? ` | ${p.codigoVisual}` : ''}</small>
             </div>
 
             <div class="producto-stock ${alerta}">
@@ -561,15 +574,36 @@ function mostrarListaProductos() {
             </button>
           </div>
         `;
+
       }).join('');
     }
 
     input.oninput = render;
     select.onchange = render;
     render();
+    filtrados.forEach(p => {
+  if (p.foto) {
+    renderProductoFoto(
+      document.getElementById(`img-prod-${p.id}`),
+      p.id
+    );
+  }
+});
   }, 150);
 }
 
+function toast(msg, tipo = "success") {
+  const div = document.createElement("div");
+  div.textContent = msg;
+  div.className = `toast toast-${tipo}`;
+  document.body.appendChild(div);
+
+  setTimeout(() => div.classList.add("show"), 50);
+  setTimeout(() => {
+    div.classList.remove("show");
+    setTimeout(() => div.remove(), 300);
+  }, 2000);
+}
 
 function mostrarFormularioAjuste(idProducto) {
   const prod = productos.find(p => p.id === idProducto);
@@ -646,7 +680,7 @@ function mostrarFormularioAjuste(idProducto) {
       });
 
       guardarEnStorage();
-      alert(`✅ Ajuste registrado.\nNuevo stock: ${stockReal}`);
+      toast("Stock actualizado");
       mostrarListaProductos();
     };
   }, 100);
@@ -834,6 +868,13 @@ function obtenerFoto(productoId) {
   });
 }
 
+async function renderProductoFoto(imgEl, productoId) {
+  const blob = await obtenerFoto(productoId);
+  if (!blob || !imgEl) return;
+  imgEl.src = URL.createObjectURL(blob);
+}
+
+
 function crearBackup() {
   const backup = {
     fecha: new Date().toISOString(),
@@ -859,11 +900,21 @@ function restaurarDesdeBackup() {
     return false;
   }
 }
+function normalizarCodigosVisuales() {
+  productos.forEach(p => {
+    if (!p.codigoVisual) {
+      p.codigoVisual = p.codigo?.startsWith('INT-') ? '' : p.codigo;
+    }
+  });
+  guardarEnStorage();
+}
 
 
 // ---------- INICIALIZACIÓN ----------
 window.addEventListener("DOMContentLoaded", async () => {
   await abrirDB();
+
+  normalizarCodigosVisuales(); // 👈
 
   if (productos.length === 0) {
     restaurarDesdeBackup();
@@ -871,6 +922,7 @@ window.addEventListener("DOMContentLoaded", async () => {
 
   mostrarListaProductos();
 });
+
 
 
 // ---------- BURBUJA FLOTANTE ----------
