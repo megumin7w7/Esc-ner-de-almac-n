@@ -491,16 +491,12 @@ function toggleBuscador() {
   if (input.style.display === 'block') input.focus();
 }
 
-
 function mostrarListaProductos() {
   const categorias = [...new Set(productos.map(p => p.categoria))].sort();
 
   const html = `
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.8rem;">
-      
-      <button class="btn lupa-btn" onclick="toggleBuscador()">
-        🔍
-      </button>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;">
+      <button class="btn lupa-btn" onclick="toggleBuscador()">🔍</button>
 
       <select id="filtro-categoria" class="select-dark">
         <option value="">📁 Todas las categorías</option>
@@ -508,12 +504,15 @@ function mostrarListaProductos() {
       </select>
     </div>
 
-    <input type="text" id="buscador"
+    <input
+      type="text"
+      id="buscador"
       placeholder="Buscar producto..."
       class="input-dark"
-      style="display:none;margin-bottom:0.8rem;">
+      style="display:none;margin-bottom:1rem;"
+    >
 
-    <div id="lista-productos"></div>
+    <div id="lista-productos" class="grid-productos"></div>
   `;
 
   cambiarAVista(html, "📦 Productos");
@@ -528,16 +527,16 @@ function mostrarListaProductos() {
       const cat   = select.value;
 
       const filtrados = productos
-      .filter(p =>
-        (!cat || p.categoria === cat) &&
-        (
-          p.nombre.toLowerCase().includes(texto) ||
-          p.codigo.toLowerCase().includes(texto)
+        .filter(p =>
+          (!cat || p.categoria === cat) &&
+          (
+            p.nombre.toLowerCase().includes(texto) ||
+            p.codigo.toLowerCase().includes(texto)
+          )
         )
-      )
-      .sort((a, b) =>
-        a.nombre.localeCompare(b.nombre, 'es', { sensitivity: 'base' })
-      );
+        .sort((a, b) =>
+          a.nombre.localeCompare(b.nombre, 'es', { sensitivity: 'base' })
+        );
 
       if (filtrados.length === 0) {
         lista.innerHTML = `<p style="text-align:center;color:#888;">No hay productos</p>`;
@@ -549,48 +548,54 @@ function mostrarListaProductos() {
           p.stockActual <= p.puntoReposicion ? 'stock-muy-bajo' :
           p.stockActual <= p.puntoReposicion * 2 ? 'stock-bajo' : '';
 
+        const imagenHTML = p.foto
+          ? `<img id="img-prod-${p.id}" class="tarjeta-foto" src="" alt="${p.nombre}">`
+          : '';
+
+        const botonMenuHTML = p.foto
+          ? `<button class="tarjeta-menu" onclick="event.stopPropagation(); mostrarMenuProducto(${p.id})">⋮</button>`
+          : '';
+
         return `
-          <div class="producto-item" onclick="mostrarFormularioAjuste(${p.id})">
-            
-            <img
-              id="img-prod-${p.id}"
-              class="producto-foto"
-              style="width:48px;height:48px;object-fit:cover;border-radius:10px;margin-right:0.6rem;"
-            >
-
-            <div style="flex:1;">
-              <strong>${p.nombre}</strong><br>
-              <small>${p.categoria}${p.codigoVisual ? ` | ${p.codigoVisual}` : ''}</small>
+          <div class="tarjeta-producto">
+            ${imagenHTML}
+            <div class="tarjeta-info" onclick="mostrarFormularioAjuste(${p.id})">
+              <div class="tarjeta-nombre">${p.nombre}</div>
+              <div class="tarjeta-categoria">${p.categoria}</div>
+              <div class="tarjeta-stock ${alerta}">📦 ${p.stockActual}</div>
             </div>
-
-            <div class="producto-stock ${alerta}">
-              📦 ${p.stockActual}
-            </div>
-
-            <button
-              onclick="event.stopPropagation(); mostrarMenuProducto(${p.id})"
-              class="menu-btn">
-              ⋮
-            </button>
+            <button class="tarjeta-menu" onclick="mostrarMenuProducto(${p.id})">⋮</button>
           </div>
         `;
-
       }).join('');
+
+      // Cargar fotos
+      filtrados.forEach(p => {
+        if (p.foto) {
+          const img = document.getElementById(`img-prod-${p.id}`);
+          renderProductoFoto(img, p.id);
+        }
+      });
     }
 
     input.oninput = render;
     select.onchange = render;
     render();
-    filtrados.forEach(p => {
-  if (p.foto) {
-    renderProductoFoto(
-      document.getElementById(`img-prod-${p.id}`),
-      p.id
-    );
-  }
-});
   }, 150);
 }
+
+
+
+async function renderProductoFoto(imgEl, productoId) {
+  const blob = await obtenerFoto(productoId);
+  if (!blob || !imgEl) return;
+
+  const url = URL.createObjectURL(blob);
+  imgEl.src = url;
+
+  imgEl.onload = () => URL.revokeObjectURL(url);
+}
+
 
 function toast(msg, tipo = "success") {
   const div = document.createElement("div");
@@ -688,43 +693,6 @@ function mostrarFormularioAjuste(idProducto) {
 
 
 
-function exportarSalidas() {
-  const salidas = ajustes.filter(a => a.tipo === "SALIDA");
-
-  if (salidas.length === 0) {
-    alert("No hay salidas registradas.");
-    return;
-  }
-
-  const headers = [
-    "Fecha",
-    "Producto",
-    "Cantidad Salida",
-    "Stock Anterior",
-    "Stock Nuevo",
-    "Usuario"
-  ];
-
-  const filas = salidas.map(a => [
-    new Date(a.fecha).toLocaleString(),
-    a.nombreProducto,
-    a.cantidad,
-    a.stockAnterior,
-    a.stockNuevo,
-    a.usuario
-  ]);
-
-  let csv = headers.join(',') + '\n';
-  csv += filas.map(f => f.map(v => `"${v}"`).join(',')).join('\n');
-
-  const blob = new Blob([csv], { type: "text/csv" });
-  const url = URL.createObjectURL(blob);
-
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = `salidas_${new Date().toISOString().slice(0,10)}.csv`;
-  a.click();
-}
 function resumenInventario() {
   const resumen = productos.map(p => {
     const movs = ajustes.filter(a => a.productoId === p.id);
@@ -765,6 +733,7 @@ function mostrarAlertas() {
   cambiarAVista(html, "⚠️ Alertas y Análisis");
 }
 
+
 function mostrarHistorial() {
   if (ajustes.length === 0) {
     const html = `<p>📦 No hay ajustes registrados aún.</p><button class="btn" onclick="mostrarListaProductos()"
@@ -776,11 +745,11 @@ function mostrarHistorial() {
     const fecha = new Date(a.fecha).toLocaleString();
     const diff = a.diferencia >= 0 ? `+${a.diferencia}` : a.diferencia;
     const color = a.diferencia < 0 ? 'color: #e63946;' : a.diferencia > 0 ? 'color: #2a9d8f;' : '';
-    return `<tr><td>${fecha}</td><td>${a.nombreProducto}</td><td>${a.stockAnterior} → ${a.stockNuevo}</td><td style="${color}">${diff}</td><td>${a.usuario}</td></tr>`;
+    return `<tr><td>${fecha}</td><td>${a.nombreProducto}</td><td>${a.stockAnterior} → ${a.stockNuevo}</td><td style="${color}">${diff}</td><td></td></tr>`;
   }).join('');
   const html = `
     <div class="card-form" style="overflow-x:auto;">
-      <table style="width:100%;min-width:600px;"><thead><tr><th>Fecha/Hora</th><th>Producto</th><th>Stock</th><th>Dif.</th><th>Usuario</th></tr></thead><tbody>${filas}</tbody></table>
+      <table style="width:100%;min-width:600px;"><thead><tr><th>Fecha/Hora</th><th>Producto</th><th>Stock</th><th>Dif.</th><th></th></tr></thead><tbody>${filas}</tbody></table>
     </div><br>
     <button class="btn" onclick="descargarHistorial()" style="background:var(--success);color:white;padding:0.8rem 2rem;border:none;border-radius:12px;">📥 Descargar CSV</button>
   <button class="btn" onclick="limpiarHistorial()"
@@ -943,3 +912,4 @@ function limpiarHistorial() {
   alert("🧹 Historial limpiado correctamente.");
   mostrarListaProductos();
 }
+
