@@ -130,21 +130,24 @@ function mostrarFormularioAlta() {
   `;
   cambiarAVista(html, "➕ Nuevo Producto");
   setTimeout(() => {
-    document.getElementById('btn-manual').onclick = () => mostrarFormularioCompleto();
+    document.getElementById('btn-manual').onclick = () => mostrarFormularioCompleto(null, false, true); // ✅ NUEVO: modo manual
     document.getElementById('btn-codigo').onclick  = () => mostrarFormularioPorCodigo();
   }, 200);
 }
 
 
-function mostrarFormularioCompleto(codigoPredefinido = null, vieneDeEscaneo = false) {
+// ✅ OPTIMIZADO: Nuevo parámetro "esManual" para ocultar el código
+function mostrarFormularioCompleto(codigoPredefinido = null, vieneDeEscaneo = false, esManual = false) {
   const html = `
     <form id="form-producto" class="card-form" style="max-width:600px;">
-      <label>Código de barras:
-        <input type="text" id="codigo"
-          value="${codigoPredefinido || ''}"
-          ${codigoPredefinido ? 'readonly' : ''}
-          style="width:100%;padding:0.5rem;margin:0.5rem 0;">
-      </label><br>
+      ${!esManual ? `
+        <label>Código de barras:
+          <input type="text" id="codigo"
+            value="${codigoPredefinido || ''}"
+            ${codigoPredefinido ? 'readonly' : ''}
+            style="width:100%;padding:0.5rem;margin:0.5rem 0;">
+        </label><br>
+      ` : ''}
 
       <label>Nombre:
         <input type="text" id="nombre" required
@@ -193,8 +196,8 @@ function mostrarFormularioCompleto(codigoPredefinido = null, vieneDeEscaneo = fa
       btn.disabled = true;
       btn.textContent = '⏳ Guardando...';
 
-      let codigo = document.getElementById('codigo').value.trim();
-      if (!codigo) codigo = generarCodigoInterno();
+      // ✅ Si es manual, genera código interno automático
+      let codigo = esManual ? generarCodigoInterno() : (document.getElementById('codigo')?.value.trim() || generarCodigoInterno());
 
       if (productos.some(p => p.codigo === codigo)) {
         alert("Ya existe producto con ese código.");
@@ -213,14 +216,14 @@ function mostrarFormularioCompleto(codigoPredefinido = null, vieneDeEscaneo = fa
           : parseInt(document.getElementById('stock')?.value || 0),
         puntoReposicion: parseInt(document.getElementById('reposicion').value),
         fechaAlta: new Date().toISOString(),
-        foto: false,        // solo indicador
-        fotoBlob: null      // 👈 aquí va el Blob real
+        foto: false,
+        fotoBlob: null
       };
 
       const fotoInput = document.getElementById('foto');
 
       if (fotoInput?.files?.[0]) {
-        nuevo.fotoBlob = fotoInput.files[0]; // ✅ Blob directo
+        nuevo.fotoBlob = fotoInput.files[0];
       }
 
       await crearProductoConFoto(nuevo);
@@ -234,449 +237,411 @@ function mostrarFormularioCompleto(codigoPredefinido = null, vieneDeEscaneo = fa
 
 
 // ---------- CREAR PRODUCTO Y GUARDAR ----------
-async function crearProductoConFoto(nuevoProducto) {
+async function crearProductoConFoto(prod) {
+  if (!db) await abrirDB();
 
-  // 1️⃣ Guardar producto SIN imagen
   productos.push({
-    ...nuevoProducto,
-    foto: !!nuevoProducto.fotoBlob
+    id: prod.id,
+    codigo: prod.codigo,
+    codigoVisual: prod.codigo?.startsWith('INT-') ? '' : prod.codigo,
+    nombre: prod.nombre,
+    categoria: prod.categoria,
+    stockActual: prod.stockActual,
+    puntoReposicion: prod.puntoReposicion,
+    fechaAlta: prod.fechaAlta,
+    foto: !!prod.fotoBlob
   });
 
-  // 2️⃣ Registrar código de barras (igual que antes)
-  if (
-    nuevoProducto.codigo &&
-    !nuevoProducto.codigo.startsWith('INT-') &&
-    !codigos.some(c => c.codigoBarra === nuevoProducto.codigo)
-  ) {
-    codigos.push({
-      codigoBarra: nuevoProducto.codigo,
-      productoId: nuevoProducto.id,
-      fechaRegistro: new Date().toISOString()
+  if (prod.fotoBlob) {
+    await guardarFoto(prod.id, prod.fotoBlob);
+  }
+
+  if (prod.stockActual > 0) {
+    ajustes.unshift({
+      id: Date.now(),
+      productoId: prod.id,
+      nombreProducto: prod.nombre,
+      stockAnterior: 0,
+      stockNuevo: prod.stockActual,
+      diferencia: prod.stockActual,
+      fecha: new Date().toISOString(),
+      usuario: USUARIO_ACTUAL,
+      tipo: "ENTRADA",
+      cantidad: prod.stockActual
     });
   }
 
-  // 3️⃣ Ajuste inicial
-  ajustes.unshift({
-    id: Date.now(),
-    productoId: nuevoProducto.id,
-    nombreProducto: nuevoProducto.nombre,
-    stockAnterior: 0,
-    stockNuevo: nuevoProducto.stockActual,
-    diferencia: nuevoProducto.stockActual,
-    fecha: new Date().toISOString(),
-    usuario: USUARIO_ACTUAL,
-    motivo: 'Alta de producto'
-  });
-
-  // 4️⃣ Guardar datos livianos
-  const ok = guardarEnStorage();
-  if (!ok) {
-    productos.pop();
-    ajustes.shift();
-    codigos = codigos.filter(c => c.productoId !== nuevoProducto.id);
-    return;
-  }
-
-  // 5️⃣ Guardar imagen REAL en IndexedDB
-  if (nuevoProducto.fotoBlob) {
-    await guardarFoto(nuevoProducto.id, nuevoProducto.fotoBlob);
-  }
-
-  // 6️⃣ Backup automático
-  crearBackup();
-
-  alert(`✅ Producto "${nuevoProducto.nombre}" creado correctamente`);
-  mostrarListaProductos();
-}
-
-
-
-
-function generarCodigoInterno() {
-  const numero = productos.length + 1;
-  return `INT-${String(numero).padStart(4, '0')}`;
-}
-
-
-// ---------- LECTOR NATIVO DEL CELULAR ----------
-function mostrarFormularioPorCodigo() {
-  const input = document.getElementById('camaraNativa');
-  if (!input) {
-    alert("Input nativo no encontrado – usá modo tradicional");
-    mostrarFormularioPorCodigoTradicional();
-    return;
-  }
-
-  input.value = '';
-  input.focus();                          // abre scanner del sistema
-
-  input.oninput = () => {
-    const codigo = input.value.trim();
-    if (codigo) {
-      input.oninput = null;               // evito dobles
-      registrarCodigoBarras(codigo);      // tu lógica
-    }
-  };
-
-  // Si no leyó en 4 s → caigo al tradicional
-  setTimeout(() => {
-    if (!input.value) {
-      input.oninput = null;
-      mostrarFormularioPorCodigoTradicional();
-    }
-  }, 4000);
-}
-
-// ---------- MODO TRADICIONAL MEJORADO ----------
-function mostrarFormularioPorCodigoTradicional() {
-  const html = `
-    <p>Acercá el código – el cuadrado verde lo rodeará cuando lo detecte</p>
-    <div id="camera-container" style="position:relative;width:100%;max-width:500px;height:300px;border:3px solid var(--border);border-radius:12px;overflow:hidden;margin:1rem auto;background:#000;">
-      <div id="interactive" style="width:100%;height:100%;"></div>
-    </div>
-    <div style="text-align:center;margin-top:0.5rem;">
-      <button id="btn-cancelar-escaner" class="btn-cancelar">❌ Cancelar</button>
-    </div>
-  `;
-  cambiarAVista(html, "📸 Escanear (cuadrado vivo)");
-
-  setTimeout(() => {
-    const btnCancel = document.getElementById('btn-cancelar-escaner');
-
-    btnCancel.onclick = () => {
-      Quagga.stop();
-      mostrarListaProductos();
-    };
-
-    // Esperamos a que Quagga esté disponible (CDN o local)
-    function iniciarQuagga() {
-      if (typeof Quagga === 'undefined') {
-        setTimeout(iniciarQuagga, 200);
-        return;
-      }
-
-      Quagga.init({
-        inputStream: {
-          name: "Live",
-          type: "LiveStream",
-          target: document.querySelector('#interactive'),
-          constraints: {
-            width: 640,
-            height: 480,
-            facingMode: "environment"
-          }
-
-        },
-        decoder: {
-          readers: ["ean_reader", "upc_reader", "code_128_reader", "code_39_reader"]
-        },
-        locator: { halfSample: true, patchSize: "medium" },
-        numOfWorkers: 1,
-        frequency: 15
-      }, function (err) {
-        if (err) {
-          console.error(err);
-          alert("⚠️ No se pudo abrir la cámara.");
-          mostrarListaProductos();
-          return;
-        }
-        Quagga.start();
-      });
-
-      // Cuadrado verde en tiempo real
-      Quagga.onProcessed(function (result) {
-        const drawingCtx = Quagga.canvas.ctx.overlay;
-        const drawingCanvas = Quagga.canvas.dom.overlay;
-        if (result) {
-          drawingCtx.clearRect(0, 0, drawingCanvas.width, drawingCanvas.height);
-          if (result.boxes) {
-            result.boxes.filter(box => box !== result.box).forEach(box => {
-              Quagga.ImageDebug.drawPath(box, { x: 0, y: 1 }, drawingCtx, { color: "green", lineWidth: 2 });
-            });
-          }
-          if (result.box) {
-            Quagga.ImageDebug.drawPath(result.box, { x: 0, y: 1 }, drawingCtx, { color: "#00FF00", lineWidth: 3 });
-          }
-        }
-      });
-
-      // Auto-lectura
-      Quagga.onDetected(function (data) {
-        const code = data.codeResult.code;
-        Quagga.stop();
-        registrarCodigoBarras(code);
-      });
-    }
-
-    iniciarQuagga();
-  }, 300);
-}
-
-
-function mostrarMenuProducto(idProducto) {
-  const prod = productos.find(p => p.id === idProducto);
-  if (!prod) return;
-
-  const html = `
-    <div class="card-dark" style="max-width:360px;margin:auto;">
-      <h3 style="margin-bottom:1rem;">📦 ${prod.nombre}</h3>
-
-      <button class="btn"
-        onclick="editarProducto(${idProducto})"
-        style="width:100%;background:var(--primary);color:white;padding:0.8rem;border-radius:12px;margin-bottom:0.6rem;">
-        ✏️ Editar producto
-      </button>
-
-      <button class="btn"
-        onclick="eliminarProducto(${idProducto})"
-        style="width:100%;background:var(--danger);color:white;padding:0.8rem;border-radius:12px;margin-bottom:0.6rem;">
-        🗑️ Eliminar producto
-      </button>
-
-      <button class="btn"
-        onclick="mostrarListaProductos()"
-        style="width:100%;background:#6c757d;color:white;padding:0.8rem;border-radius:12px;">
-        ← Volver
-      </button>
-    </div>
-  `;
-
-  cambiarAVista(html, "📦 Opciones de producto");
-}
-
-
-function editarProducto(idProducto) {
-  const prod = productos.find(p => p.id === idProducto);
-  if (!prod) return;
-
-  const html = `
-    <form id="form-editar" class="card-form" style="max-width:600px;">
-      <label>Nombre: <input type="text" id="edit-nombre" value="${prod.nombre}" style="width:100%;padding:0.5rem;margin:0.5rem 0;"></label><br>
-      <label>Categoría: <input type="text" id="edit-categoria" value="${prod.categoria}" style="width:100%;padding:0.5rem;margin:0.5rem 0;"></label><br>
-      <label>Punto de reposición: <input type="number" id="edit-reposicion" value="${prod.puntoReposicion}" min="0" style="width:100%;padding:0.5rem;margin:0.5rem 0;"></label><br><br>
-      <button type="submit" class="btn" style="background:var(--success);color:white;padding:0.8rem 2rem;border:none;border-radius:12px;">💾 Guardar cambios</button>
-      <button type="button" class="btn" onclick="mostrarListaProductos()" style="margin-left:0.5rem;background:#6c757d;color:white;padding:0.8rem 1.5rem;border:none;border-radius:12px;">← Cancelar</button>
-    </form>
-  `;
-  cambiarAVista(html, "✏️ Editar producto");
-
-  setTimeout(() => {
-    document.getElementById('form-editar').onsubmit = (e) => {
-      e.preventDefault();
-      prod.nombre = document.getElementById('edit-nombre').value.trim();
-      prod.categoria = document.getElementById('edit-categoria').value.trim();
-      prod.puntoReposicion = parseInt(document.getElementById('edit-reposicion').value);
-      guardarEnStorage();
-      alert('✅ Producto actualizado.');
-      mostrarListaProductos();
-    };
-  }, 200);
-}
-
-function eliminarProducto(idProducto) {
-  if (!confirm('¿Seguro que querés eliminar este producto? Se borrarán también sus códigos.')) return;
-
-  // Eliminar códigos asociados
-  codigos = codigos.filter(c => c.productoId !== idProducto);
-  // Eliminar producto
-  productos = productos.filter(p => p.id !== idProducto);
   guardarEnStorage();
-  alert('🗑️ Producto eliminado.');
+  toast("✅ Producto creado");
   mostrarListaProductos();
 }
 
-function toggleBuscador() {
-  const input = document.getElementById('buscador');
-  input.style.display = input.style.display === 'none' ? 'block' : 'none';
-  if (input.style.display === 'block') input.focus();
-}
-
+// ✅ OPTIMIZADO: Lazy loading de imágenes con Intersection Observer
 function mostrarListaProductos() {
-  const categorias = [...new Set(productos.map(p => p.categoria))].sort();
-
   const html = `
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:1rem;">
-      <button class="btn lupa-btn" onclick="toggleBuscador()">🔍</button>
-
-      <select id="filtro-categoria" class="select-dark">
-        <option value="">📁 Todas las categorías</option>
-        ${categorias.map(c => `<option value="${c}">${c}</option>`).join('')}
-      </select>
-    </div>
-
-    <input
-      type="text"
-      id="buscador"
-      placeholder="Buscar producto..."
-      class="input-dark"
-      style="display:none;margin-bottom:1rem;"
-    >
-
-    <div id="lista-productos" class="grid-productos"></div>
+    <input type="text" id="buscar" class="input-dark" placeholder="🔍 Buscar producto..." style="margin-bottom:1rem;">
+    <div id="grid-productos" class="grid-productos"></div>
   `;
-
   cambiarAVista(html, "📦 Productos");
 
-  setTimeout(() => {
-    const lista  = document.getElementById('lista-productos');
-    const input  = document.getElementById('buscador');
-    const select = document.getElementById('filtro-categoria');
+  const buscar = document.getElementById('buscar');
+  const grid = document.getElementById('grid-productos');
 
-    function render() {
-      const texto = input.value.toLowerCase();
-      const cat   = select.value;
+  function renderizar(lista) {
+    // ✅ Usar DocumentFragment para mejor performance
+    const fragment = document.createDocumentFragment();
 
-      const filtrados = productos
-        .filter(p =>
-          (!cat || p.categoria === cat) &&
-          (
-            p.nombre.toLowerCase().includes(texto) ||
-            p.codigo.toLowerCase().includes(texto)
-          )
-        )
-        .sort((a, b) =>
-          a.nombre.localeCompare(b.nombre, 'es', { sensitivity: 'base' })
-        );
+    lista.forEach(p => {
+      const tarjeta = document.createElement('div');
+      tarjeta.className = 'tarjeta-producto';
+      
+      const stockClass = p.stockActual <= p.puntoReposicion 
+        ? (p.stockActual === 0 ? 'stock-muy-bajo' : 'stock-bajo') 
+        : '';
 
-      if (filtrados.length === 0) {
-        lista.innerHTML = `<p style="text-align:center;color:#888;">No hay productos</p>`;
-        return;
-      }
+      tarjeta.innerHTML = `
+        <img class="tarjeta-foto lazy-img" data-producto-id="${p.id}" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='150' height='120'%3E%3Crect width='150' height='120' fill='%23333'/%3E%3C/svg%3E" alt="${p.nombre}">
+        <div class="tarjeta-info">
+          <div class="tarjeta-nombre">${p.nombre}</div>
+          <div class="tarjeta-categoria">${p.categoria}</div>
+          <div class="tarjeta-stock ${stockClass}">Stock: ${p.stockActual}</div>
+        </div>
+        <button class="tarjeta-menu" onclick="event.stopPropagation(); mostrarMenuProducto(${p.id})">⋮</button>
+      `;
 
-      lista.innerHTML = filtrados.map(p => {
-        const alerta =
-          p.stockActual <= p.puntoReposicion ? 'stock-muy-bajo' :
-          p.stockActual <= p.puntoReposicion * 2 ? 'stock-bajo' : '';
-
-        const imagenHTML = p.foto
-          ? `<img id="img-prod-${p.id}" class="tarjeta-foto" src="" alt="${p.nombre}">`
-          : '';
-
-        const botonMenuHTML = p.foto
-          ? `<button class="tarjeta-menu" onclick="event.stopPropagation(); mostrarMenuProducto(${p.id})">⋮</button>`
-          : '';
-
-        return `
-          <div class="tarjeta-producto">
-            ${imagenHTML}
-            <div class="tarjeta-info" onclick="mostrarFormularioAjuste(${p.id})">
-              <div class="tarjeta-nombre">${p.nombre}</div>
-              <div class="tarjeta-categoria">${p.categoria}</div>
-              <div class="tarjeta-stock ${alerta}">📦 ${p.stockActual}</div>
-            </div>
-            <button class="tarjeta-menu" onclick="mostrarMenuProducto(${p.id})">⋮</button>
-          </div>
-        `;
-      }).join('');
-
-      // Cargar fotos
-      filtrados.forEach(p => {
-        if (p.foto) {
-          const img = document.getElementById(`img-prod-${p.id}`);
-          renderProductoFoto(img, p.id);
+      tarjeta.onclick = (e) => {
+        if (!e.target.classList.contains('tarjeta-menu')) {
+          mostrarDetalleProducto(p.id);
         }
-      });
-    }
+      };
 
-    input.oninput = render;
-    select.onchange = render;
-    render();
-  }, 150);
-}
+      fragment.appendChild(tarjeta);
+    });
 
+    grid.innerHTML = '';
+    grid.appendChild(fragment);
 
-
-async function renderProductoFoto(imgEl, productoId) {
-  const blob = await obtenerFoto(productoId);
-  if (!blob || !imgEl) return;
-
-  const url = URL.createObjectURL(blob);
-  imgEl.src = url;
-
-  imgEl.onload = () => URL.revokeObjectURL(url);
-}
-
-
-function toast(msg, tipo = "success") {
-  const div = document.createElement("div");
-  div.textContent = msg;
-  div.className = `toast toast-${tipo}`;
-  document.body.appendChild(div);
-
-  setTimeout(() => div.classList.add("show"), 50);
-  setTimeout(() => {
-    div.classList.remove("show");
-    setTimeout(() => div.remove(), 300);
-  }, 2000);
-}
-
-function mostrarFormularioAjuste(idProducto) {
-  const prod = productos.find(p => p.id === idProducto);
-  if (!prod) {
-    alert("Producto no encontrado.");
-    return;
+    // ✅ Lazy loading con Intersection Observer
+    inicializarLazyLoading();
   }
 
+  buscar.oninput = () => {
+    const termino = buscar.value.toLowerCase();
+    const filtrados = productos.filter(p => 
+      p.nombre.toLowerCase().includes(termino) || 
+      p.categoria.toLowerCase().includes(termino) ||
+      (p.codigoVisual && p.codigoVisual.toLowerCase().includes(termino))
+    );
+    renderizar(filtrados);
+  };
+
+  renderizar(productos);
+}
+
+// ✅ NUEVO: Intersection Observer para cargar imágenes solo cuando son visibles
+function inicializarLazyLoading() {
+  const imagenes = document.querySelectorAll('.lazy-img');
+  
+  const imageObserver = new IntersectionObserver((entries, observer) => {
+    entries.forEach(entry => {
+      if (entry.isIntersecting) {
+        const img = entry.target;
+        const productoId = parseInt(img.dataset.productoId);
+        
+        // Cargar la imagen real
+        cargarImagenProducto(img, productoId);
+        
+        // Dejar de observar esta imagen
+        observer.unobserve(img);
+      }
+    });
+  }, {
+    rootMargin: '50px' // Cargar un poco antes de que sea visible
+  });
+
+  imagenes.forEach(img => imageObserver.observe(img));
+}
+
+// ✅ OPTIMIZADO: Cargar imagen individual de forma asíncrona
+async function cargarImagenProducto(imgElement, productoId) {
+  try {
+    const blob = await obtenerFoto(productoId);
+    if (blob) {
+      imgElement.src = URL.createObjectURL(blob);
+    } else {
+      // Imagen placeholder si no hay foto
+      imgElement.src = 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="150" height="120"%3E%3Crect width="150" height="120" fill="%23444"/%3E%3Ctext x="50%25" y="50%25" text-anchor="middle" fill="%23999" font-size="14"%3ESin foto%3C/text%3E%3C/svg%3E';
+    }
+  } catch (error) {
+    console.error('Error cargando imagen:', error);
+  }
+}
+
+function mostrarDetalleProducto(id) {
+  const p = productos.find(prod => prod.id === id);
+  if (!p) return;
+
+  const movimientos = ajustes.filter(a => a.productoId === id).slice(0, 10);
+  const historialHTML = movimientos.length > 0
+    ? movimientos.map(a => {
+        const fecha = new Date(a.fecha).toLocaleString();
+        const diff = a.diferencia >= 0 ? `+${a.diferencia}` : a.diferencia;
+        const color = a.diferencia < 0 ? 'color:#e63946;' : a.diferencia > 0 ? 'color:#2a9d8f;' : '';
+        return `<div style="padding:0.5rem;border-bottom:1px solid rgba(255,255,255,0.1);"><small>${fecha}</small><br><strong style="${color}">${diff}</strong> unidades (${a.stockAnterior} → ${a.stockNuevo})</div>`;
+      }).join('')
+    : '<p style="opacity:0.6;">No hay movimientos registrados</p>';
+
+  const stockClass = p.stockActual <= p.puntoReposicion ? (p.stockActual === 0 ? 'stock-muy-bajo' : 'stock-bajo') : '';
+
   const html = `
-    <div class="card-form">
-      <p><strong>Código:</strong> ${prod.codigo} | <strong>Categoría:</strong> ${prod.categoria}</p>
-      <p>📊 Stock registrado: <strong>${prod.stockActual}</strong></p>
-
-      <form id="form-ajuste">
-        <label>
-          Stock físico real (contado ahora):
-          <input
-            type="number"
-            id="stock-real"
-            placeholder="Stock actual: ${prod.stockActual}"
-            min="0"
-            style="width:100%;padding:0.5rem;margin:0.5rem 0;"
-          >
-        </label><br><br>
-
-        <button type="submit" class="btn"
-          style="background:var(--success);color:white;padding:0.8rem 2rem;border:none;border-radius:12px;">
-          ✅ Confirmar Ajuste
-        </button>
-
-        <button type="button" class="btn"
-          onclick="mostrarListaProductos()"
-          style="background:#6c757d;color:white;padding:0.8rem 1.5rem;border:none;border-radius:12px;margin-left:0.5rem;">
-          ← Volver
-        </button>
-      </form>
+    <div class="card-dark" style="text-align:center;">
+      <img id="detalle-foto" src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='200'%3E%3Crect width='200' height='200' fill='%23333'/%3E%3C/svg%3E" 
+           style="width:100%;max-width:300px;height:auto;border-radius:12px;margin:1rem auto;object-fit:contain;background:rgba(255,255,255,0.05);">
+      <h3>${p.nombre}</h3>
+      <p><strong>Categoría:</strong> ${p.categoria}</p>
+      ${p.codigoVisual ? `<p><strong>Código:</strong> ${p.codigoVisual}</p>` : ''}
+      <p class="${stockClass}" style="font-size:1.3rem;"><strong>Stock actual: ${p.stockActual}</strong></p>
+      <p>Punto de reposición: ${p.puntoReposicion}</p>
+      <div style="display:flex;gap:0.5rem;justify-content:center;margin:1rem 0;">
+        <button class="btn" onclick="mostrarFormularioAjuste(${id})" style="background:var(--primary);color:white;padding:0.6rem 1.2rem;border:none;border-radius:8px;">🔄 Ajustar Stock</button>
+        <button class="btn" onclick="editarProducto(${id})" style="background:var(--warning);color:white;padding:0.6rem 1.2rem;border:none;border-radius:8px;">✏️ Editar</button>
+        <button class="btn" onclick="eliminarProducto(${id})" style="background:var(--danger);color:white;padding:0.6rem 1.2rem;border:none;border-radius:8px;">🗑️ Eliminar</button>
+      </div>
+    </div>
+    <div class="card-dark" style="margin-top:1rem;">
+      <h3>📊 Últimos movimientos</h3>
+      ${historialHTML}
     </div>
   `;
 
-  cambiarAVista(html, `🔄 Ajuste: ${prod.nombre}`);
+  cambiarAVista(html, "🔍 Detalle del Producto");
+
+  // Cargar foto de detalle
+  const imgDetalle = document.getElementById('detalle-foto');
+  cargarImagenProducto(imgDetalle, id);
+}
+
+function mostrarMenuProducto(id) {
+  const p = productos.find(prod => prod.id === id);
+  if (!p) return;
+
+  const opciones = [
+    { texto: "🔍 Ver detalle", accion: () => mostrarDetalleProducto(id) },
+    { texto: "🔄 Ajustar stock", accion: () => mostrarFormularioAjuste(id) },
+    { texto: "✏️ Editar", accion: () => editarProducto(id) },
+    { texto: "🗑️ Eliminar", accion: () => eliminarProducto(id) }
+  ];
+
+  const html = `
+    <div class="card-dark" style="max-width:300px;margin:auto;">
+      <h3>${p.nombre}</h3>
+      <div style="display:flex;flex-direction:column;gap:0.5rem;margin-top:1rem;">
+        ${opciones.map((o, i) => `<button id="opt-${i}" class="btn" style="width:100%;text-align:left;background:rgba(255,255,255,0.1);border:none;color:white;padding:0.8rem;border-radius:8px;">${o.texto}</button>`).join('')}
+      </div>
+    </div>
+  `;
+
+  cambiarAVista(html, "⚙️ Opciones");
+
+  opciones.forEach((o, i) => {
+    document.getElementById(`opt-${i}`).onclick = o.accion;
+  });
+}
+
+function editarProducto(id) {
+  const p = productos.find(prod => prod.id === id);
+  if (!p) return;
+
+  const html = `
+    <form id="form-edit" class="card-form">
+      <label>Nombre:
+        <input type="text" id="edit-nombre" value="${p.nombre}" required style="width:100%;padding:0.6rem;margin:0.5rem 0;">
+      </label><br>
+      <label>Categoría:
+        <input type="text" id="edit-categoria" value="${p.categoria}" style="width:100%;padding:0.6rem;margin:0.5rem 0;">
+      </label><br>
+      <label>Punto de reposición:
+        <input type="number" id="edit-repo" value="${p.puntoReposicion}" min="0" style="width:100%;padding:0.6rem;margin:0.5rem 0;">
+      </label><br>
+      <label>Cambiar foto (opcional):
+        <input type="file" id="edit-foto" accept="image/*" capture="environment" style="width:100%;padding:0.3rem;margin:0.5rem 0;">
+      </label><br><br>
+      <button type="submit" class="btn" style="background:var(--primary);color:white;padding:0.8rem 2rem;border:none;border-radius:12px;">💾 Guardar Cambios</button>
+    </form>
+  `;
+
+  cambiarAVista(html, "✏️ Editar Producto");
+
+  document.getElementById('form-edit').onsubmit = async (e) => {
+    e.preventDefault();
+
+    p.nombre = document.getElementById('edit-nombre').value.trim();
+    p.categoria = document.getElementById('edit-categoria').value.trim() || 'Sin categoría';
+    p.puntoReposicion = parseInt(document.getElementById('edit-repo').value);
+
+    const fotoInput = document.getElementById('edit-foto');
+    if (fotoInput.files[0]) {
+      await guardarFoto(p.id, fotoInput.files[0]);
+      p.foto = true;
+    }
+
+    guardarEnStorage();
+    toast("✅ Producto actualizado");
+    mostrarDetalleProducto(id);
+  };
+}
+
+function eliminarProducto(id) {
+  const p = productos.find(prod => prod.id === id);
+  if (!p) return;
+
+  if (!confirm(`¿Eliminar "${p.nombre}"?\nEsta acción no se puede deshacer.`)) return;
+
+  productos = productos.filter(prod => prod.id !== id);
+  ajustes = ajustes.filter(a => a.productoId !== id);
+  codigos = codigos.filter(c => c.productoId !== id);
+
+  guardarEnStorage();
+  toast("🗑️ Producto eliminado");
+  mostrarListaProductos();
+}
+
+function generarCodigoInterno() {
+  return `INT-${Date.now()}`;
+}
+
+function toast(mensaje) {
+  const div = document.createElement('div');
+  div.textContent = mensaje;
+  div.style.cssText = 'position:fixed;top:20px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,0.9);color:white;padding:1rem 2rem;border-radius:12px;z-index:9999;box-shadow:0 4px 12px rgba(0,0,0,0.3);';
+  document.body.appendChild(div);
+  setTimeout(() => div.remove(), 2000);
+}
+
+function mostrarFormularioPorCodigo() {
+  const html = `
+    <div class="card-dark" style="text-align:center;max-width:400px;margin:auto;">
+      <p>Escaneá o ingresá manualmente el código de barras del producto</p>
+      <div style="margin:2rem 0;">
+        <button id="btn-escanear" class="btn" style="width:100%;margin-bottom:1rem;background:var(--primary);color:white;padding:1rem;border:none;border-radius:12px;font-size:1.1rem;">📷 Escanear con cámara</button>
+        <p style="opacity:0.6;">o</p>
+        <input type="text" id="input-codigo-manual" placeholder="Ingresá código manualmente" style="width:100%;padding:0.8rem;margin:0.5rem 0;" autofocus>
+        <button id="btn-codigo-manual" class="btn" style="width:100%;background:var(--success);color:white;padding:0.8rem;border:none;border-radius:12px;">✅ Confirmar código</button>
+      </div>
+    </div>
+  `;
+  cambiarAVista(html, "🔖 Ingreso por Código");
+
+  document.getElementById('btn-escanear').onclick = iniciarEscaneo;
+  document.getElementById('btn-codigo-manual').onclick = () => {
+    const codigo = document.getElementById('input-codigo-manual').value.trim();
+    if (codigo) registrarCodigoBarras(codigo);
+  };
+  document.getElementById('input-codigo-manual').onkeypress = (e) => {
+    if (e.key === 'Enter') document.getElementById('btn-codigo-manual').click();
+  };
+}
+
+function iniciarEscaneo() {
+  const html = `
+    <div style="text-align:center;">
+      <div id="camera-container"></div>
+      <p id="estado-escaner" style="margin:1rem 0;font-weight:600;">Iniciando cámara...</p>
+      <button id="btn-stop-scan" class="btn-cancelar">❌ Cancelar</button>
+    </div>
+  `;
+  cambiarAVista(html, "📷 Escaneando...");
 
   setTimeout(() => {
-    document.getElementById('form-ajuste').onsubmit = (e) => {
-      e.preventDefault();
+    document.getElementById('btn-stop-scan').onclick = () => {
+      if (typeof Quagga !== 'undefined') Quagga.stop();
+      mostrarFormularioPorCodigo();
+    };
 
-      const input = document.getElementById('stock-real').value.trim();
-      if (input === '') {
-        alert("⚠️ No ingresaste ningún valor.");
+    if (typeof Quagga === 'undefined') {
+      document.getElementById('estado-escaner').textContent = '❌ Escáner no disponible';
+      return;
+    }
+
+    Quagga.init({
+      inputStream: {
+        name: "Live",
+        type: "LiveStream",
+        target: document.querySelector('#camera-container'),
+        constraints: {
+          facingMode: "environment"
+        }
+      },
+      decoder: {
+        readers: ["ean_reader", "code_128_reader", "upc_reader"]
+      }
+    }, (err) => {
+      if (err) {
+        document.getElementById('estado-escaner').textContent = '❌ Error al acceder a la cámara';
+        return;
+      }
+      document.getElementById('estado-escaner').textContent = '✅ Buscando código...';
+      Quagga.start();
+    });
+
+    Quagga.onDetected((result) => {
+      const codigo = result.codeResult.code;
+      Quagga.stop();
+      registrarCodigoBarras(codigo);
+    });
+  }, 100);
+}
+
+function mostrarFormularioAjuste(id) {
+  const p = productos.find(prod => prod.id === id);
+  if (!p) return;
+
+  const html = `
+    <div class="card-form" style="max-width:400px;margin:auto;">
+      <p><strong>Producto:</strong> ${p.nombre}</p>
+      <p><strong>Stock actual:</strong> ${p.stockActual}</p>
+      <br>
+      <label>Tipo de movimiento:
+        <select id="tipo-mov" class="select-dark" style="width:100%;padding:0.6rem;margin:0.5rem 0;">
+          <option value="ENTRADA">📥 Entrada (aumenta stock)</option>
+          <option value="SALIDA">📤 Salida (reduce stock)</option>
+        </select>
+      </label><br>
+      <label>Cantidad:
+        <input type="number" id="cantidad" min="1" value="1" required style="width:100%;padding:0.6rem;margin:0.5rem 0;">
+      </label><br><br>
+      <button id="btn-aplicar" class="btn" style="width:100%;background:var(--primary);color:white;padding:0.8rem;border:none;border-radius:12px;">✅ Aplicar Ajuste</button>
+    </div>
+  `;
+
+  cambiarAVista(html, "🔄 Ajustar Stock");
+
+  setTimeout(() => {
+    document.getElementById('btn-aplicar').onclick = () => {
+      const tipo = document.getElementById('tipo-mov').value;
+      const cantidad = parseInt(document.getElementById('cantidad').value);
+
+      if (cantidad <= 0) {
+        alert("La cantidad debe ser mayor a 0");
         return;
       }
 
-      const stockReal = parseInt(input);
-      const stockAnterior = prod.stockActual;
-      const diferencia = stockReal - stockAnterior;
+      const stockAnterior = p.stockActual;
+      const diferencia = tipo === "ENTRADA" ? cantidad : -cantidad;
+      p.stockActual += diferencia;
 
-      let tipo = "AJUSTE";
-      let cantidad = Math.abs(diferencia);
-      if (diferencia > 0) tipo = "ENTRADA";
-      if (diferencia < 0) tipo = "SALIDA";
-
-      prod.stockActual = stockReal;
+      if (p.stockActual < 0) {
+        alert("No podés tener stock negativo");
+        p.stockActual = stockAnterior;
+        return;
+      }
 
       ajustes.unshift({
         id: Date.now(),
-        productoId: prod.id,
-        nombreProducto: prod.nombre,
+        productoId: p.id,
+        nombreProducto: p.nombre,
         stockAnterior,
-        stockNuevo: stockReal,
+        stockNuevo: p.stockActual,
         diferencia,
         cantidad,
         tipo,
@@ -883,7 +848,7 @@ function normalizarCodigosVisuales() {
 window.addEventListener("DOMContentLoaded", async () => {
   await abrirDB();
 
-  normalizarCodigosVisuales(); // 👈
+  normalizarCodigosVisuales();
 
   if (productos.length === 0) {
     restaurarDesdeBackup();
@@ -912,4 +877,3 @@ function limpiarHistorial() {
   alert("🧹 Historial limpiado correctamente.");
   mostrarListaProductos();
 }
-
